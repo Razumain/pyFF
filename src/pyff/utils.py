@@ -1,3 +1,4 @@
+# coding=utf-8
 """
 
 This module contains various utilities.
@@ -13,6 +14,7 @@ from threading import local
 from time import gmtime, strftime, clock
 from traceback import print_exc
 from urlparse import urlparse
+from itertools import chain
 
 import xmlsec
 import cherrypy
@@ -25,6 +27,7 @@ from jinja2 import Environment, PackageLoader
 from lxml import etree
 
 from .constants import NS
+from .constants import config
 from .decorators import retry
 from .logs import log
 
@@ -257,12 +260,15 @@ def truncate_filter(s,max_len=10):
 env.filters['u'] = urlencode_filter
 env.filters['truncate'] = truncate_filter
 
+
 def template(name):
     return env.get_template(name)
+
 
 def render_template(name, **kwargs):
     kwargs.setdefault('http', cherrypy.request)
     kwargs.setdefault('brand', "pyFF @ %s" % request_vhost(cherrypy.request))
+    kwargs.setdefault('google_api_key', config.google_api_key)
     kwargs.setdefault('_', _)
     return template(name).render(**kwargs)
 
@@ -274,6 +280,7 @@ def parse_date(s):
     if s is None:
         return datetime.now()
     return datetime(*parsedate(s)[:6])
+
 
 @retry((IOError, httplib2.HttpLib2Error))
 def load_url(url, enable_cache=True, timeout=60):
@@ -547,7 +554,6 @@ def url2host(url):
     return host
 
 
-
 def subdomains(domain):
     dl = []
     dsplit = domain.split('.')
@@ -579,7 +585,63 @@ def avg_domain_distance(d1, d2):
     for a in d1.split(';'):
         for b in d2.split(';'):
             d = ddist(a, b)
-            log.debug("ddist %s %s -> %d" % (a, b, d))
+            #log.debug("ddist %s %s -> %d" % (a, b, d))
             dd += d
             n += 1
     return int(dd / n)
+
+
+# semantics copied from https://github.com/lordal/md-summary/blob/master/md-summary
+# many thanks to Anders Lordahl & Scotty Logan for the idea
+def guess_entity_software(e):
+    for elt in chain(e.findall(".//{%s}SingleSignOnService" % NS['md']), e.findall(".//{%s}AssertionConsumerService" % NS['md'])):
+        location = elt.get('Location')
+        if location:
+            if 'Shibboleth.sso' in location \
+                    or 'profile/SAML2/POST/SSO' in location \
+                    or 'profile/SAML2/Redirect/SSO' in location \
+                    or 'profile/Shibboleth/SSO' in location:
+                return 'Shibboleth'
+            if location.endswith('saml2/idp/SSOService.php') or 'saml/sp/saml2-acs.php' in location:
+                return 'SimpleSAMLphp'
+            if location.endswith('user/authenticate'):
+                return 'KalturaSSP'
+            if location.endswith('adfs/ls') or location.endswith('adfs/ls/'):
+                return 'ADFS'
+            if '/oala/' in location or 'login.openathens.net' in location:
+                return 'OpenAthens'
+            if '/idp/SSO.saml2' in location or '/sp/ACS.saml2' in location or 'sso.connect.pingidentity.com' in location:
+                return 'PingFederate'
+            if 'idp/saml2/sso' in location:
+                return 'Authentic2'
+            if 'nidp/saml2/sso' in location:
+                return 'Novell Access Manager'
+            if 'affwebservices/public/saml2sso' in location:
+                return 'CASiteMinder'
+            if 'FIM/sps' in location:
+                return 'IBMTivoliFIM'
+            if 'sso/post' in location \
+                    or 'sso/redirect' in location \
+                    or 'saml2/sp/acs' in location \
+                    or 'saml2/ls' in location \
+                    or 'saml2/acs' in location \
+                    or 'acs/redirect' in location \
+                    or 'acs/post' in location \
+                    or 'saml2/sp/ls/' in location:
+                return 'PySAML'
+            if 'engine.surfconext.nl' in location:
+                return 'SURFConext'
+            if 'opensso' in location:
+                return 'OpenSSO'
+            if 'my.salesforce.com' in location:
+                return 'Salesforce'
+
+    entity_id = e.get('entityID')
+    if '/shibboleth' in entity_id:
+        return 'Shibboleth'
+    if entity_id.endswith('/metadata.php'):
+        return 'SimpleSAMLphp'
+    if '/openathens' in entity_id:
+        return 'OpenAthens'
+
+    return 'other'

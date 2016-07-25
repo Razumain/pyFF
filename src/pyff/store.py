@@ -14,7 +14,7 @@ from pyff.constants import NS, ATTRS
 from pyff.decorators import cached
 from pyff.logs import log
 from pyff.utils import root, dumptree, parse_xml, hex_digest, hash_id, EntitySet, \
-    url2host, subdomains, has_tag, iter_entities, valid_until_ts
+    url2host, subdomains, has_tag, iter_entities, valid_until_ts, guess_entity_software
 
 
 def is_idp(entity):
@@ -83,6 +83,9 @@ def entity_attribute_dict(entity):
     if is_aa(entity):
         roles.append('aa')
 
+    if ATTRS['software'] not in d:
+        d[ATTRS['software']] = [guess_entity_software(entity)]
+
     return d
 
 
@@ -111,7 +114,7 @@ class StoreBase(object):
     def periodic(self, stats):
         pass
 
-    def size(self):
+    def size(self, a=None, v=None):
         raise NotImplementedError()
 
     def collections(self):
@@ -121,12 +124,6 @@ class StoreBase(object):
         raise NotImplementedError()
 
     def reset(self):
-        raise NotImplementedError()
-
-    def set(self, key, mapping):
-        raise NotImplementedError()
-
-    def get(self, key):
         raise NotImplementedError()
 
 
@@ -147,8 +144,13 @@ class MemoryStore(StoreBase):
     def clone(self):
         return deepcopy(self)
 
-    def size(self):
-        return len(self.entities)
+    def size(self, a=None, v=None):
+        if a is None:
+            return len(self.entities)
+        elif a is not None and v is None:
+            return len(self.index.setdefault('attr', {}).setdefault(a, {}).keys())
+        else:
+            return len(self.index.setdefault('attr', {}).setdefault(a, {}).get(v, []))
 
     def attributes(self):
         return self.index.setdefault('attr', {}).keys()
@@ -355,12 +357,6 @@ class RedisStore(StoreBase):
     def collections(self):
         return self.rc.smembers("#collections")
 
-    def set(self, key, mapping):
-        self.rc.hmset(key, mapping)
-
-    def get(self, key):
-        return self.rc.hgetall(key)
-
     def update(self, t, tid=None, ts=None, merge_strategy=None):  # TODO: merge ?
         log.debug("redis store update: %s: %s" % (t, tid))
         relt = root(t)
@@ -419,7 +415,7 @@ class RedisStore(StoreBase):
         return root(parse_xml(StringIO(self.rc.get("%s#metadata" % key))))
 
     def lookup(self, key):
-        # log.debug("redis store lookup: %s" % key)
+        log.debug("redis store lookup: %s" % key)
         if '+' in key:
             hk = hex_digest(key)
             if not self.rc.exists("%s#members" % hk):
