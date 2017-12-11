@@ -29,7 +29,11 @@ install_requires = [
     'redis',
     'futures',
     'requests',
-    'pyconfig'
+    'requests_cache',
+    'requests_file',
+    'pyconfig',
+    'pyyaml',
+    'multiprocess'
 ]
 
 python_implementation_str = python_implementation()
@@ -53,7 +57,7 @@ setup(name='pyFF',
       url='http://blogs.mnt.se',
       license='BSD',
       setup_requires=['nose>=1.0'],
-      tests_require=['pbr', 'nose>=1.0', 'mock', 'mako', 'mockredispy', 'testfixtures'],
+      tests_require=['pbr', 'coverage', 'nose>=1.0', 'mock', 'mako', 'mockredispy', 'testfixtures'],
       test_suite="nose.collector",
       packages=find_packages('src'),
       package_dir={'': 'src'},
