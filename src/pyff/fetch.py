@@ -18,10 +18,8 @@ from .parse import parse_resource
 from itertools import chain
 from requests_cache.core import CachedSession
 from copy import deepcopy
-from six import StringIO
 
 requests.packages.urllib3.disable_warnings()
-
 
 
 class ResourceException(Exception):
@@ -35,7 +33,6 @@ class ResourceException(Exception):
 
 
 class ResourceManager(DictMixin):
-
     def __init__(self):
         self._resources = dict()
         self.shutdown = False
@@ -73,31 +70,47 @@ class ResourceManager(DictMixin):
     def __contains__(self, item):
         return item in self._resources
 
-    def reload(self, url=None):
+    def reload(self, url=None, fail_on_error=False, store=None):
         # type: (object, basestring) -> None
+        if url is not None:
+            resources = deque([self[url]])
+        else:
+            resources = deque(self.values())
+
         with futures.ThreadPoolExecutor(max_workers=config.worker_pool_size) as executor:
-            tasks = dict((executor.submit(r.fetch), r) for r in self.walk(url))
-            i = 0
-            for future in futures.as_completed(tasks):
-                r = tasks[future]
-                try:
-                    res = future.result()
-                except Exception as ex:
-                    from traceback import print_exc
-                    print_exc()
+            while resources:
+                tasks = dict((executor.submit(r.fetch, store=store), r) for r in resources)
+                new_resources = deque()
+                for future in futures.as_completed(tasks):
+                    r = tasks[future]
+                    try:
+                        res = future.result()
+                        if res is not None:
+                            for nr in res:
+                                new_resources.append(nr)
+                    except Exception as ex:
+                        log.error(str(ex))
+                        if fail_on_error:
+                            raise ex
+                resources = new_resources
+
 
 class Resource(object):
-    def __init__(self, url, post, **kwargs):
+    def __init__(self, url, **kwargs):
         self.url = url
-        self.post = post
         self.opts = kwargs
         self.t = None
         self.type = "text/plain"
         self.expire_time = None
         self.last_seen = None
         self._infos = deque(maxlen=config.info_buffer_size)
-        self.children = []
+        self.children = deque()
 
+        def _null(t):
+            return t
+
+        self.opts.setdefault('cleanup', _null)
+        self.opts.setdefault('via', _null)
         self.opts.setdefault('fail_on_error', False)
         self.opts.setdefault('as', None)
         self.opts.setdefault('verify', None)
@@ -105,8 +118,16 @@ class Resource(object):
         self.opts.setdefault('validate', True)
 
         if "://" not in self.url:
-            if os.path.isdir(self.url) or os.path.isfile(self.url):
+            if os.path.isfile(self.url):
                 self.url = "file://{}".format(os.path.abspath(self.url))
+
+    @property
+    def post(self):
+        return self.opts['via']
+
+    @property
+    def cleanup(self):
+        return self.opts['cleanup']
 
     def __str__(self):
         return "Resource {} expires at {} using ".format(self.url, self.expire_time) + \
@@ -129,9 +150,11 @@ class Resource(object):
         self._infos.append(info)
 
     def add_child(self, url, **kwargs):
-        opts = deepcopy(self.opts)
+        opts = dict()
+        opts.update(self.opts)
+        del opts['as']
         opts.update(kwargs)
-        self.children.append(Resource(url, self.post, **opts))
+        self.children.append(Resource(url, **opts))
 
     @property
     def name(self):
@@ -147,44 +170,61 @@ class Resource(object):
         else:
             return self._infos[-1]
 
-    def fetch(self, recurse=True):
-        s = None
-        if 'file://' in self.url:
-            s = requests.session()
-            s.mount('file://', FileAdapter())
-        else:
-            s = CachedSession(cache_name="pyff_cache",
-                              expire_after=config.request_cache_time,
-                              old_data_on_error=True)
-
-        r = s.get(self.url, verify=False, timeout=config.request_timeout)
-        if config.request_override_encoding is not None:
-            r.encoding = config.request_override_encoding
+    def fetch(self, store=None):
         info = dict()
-        info['Response Headers'] = r.headers
-        log.debug("got status_code={:d}, encoding={} from_cache={} from {}".
-                  format(r.status_code, r.encoding, getattr(r,"from_cache",False), r.url))
-        data = r.text
-        if r.ok and data:
-            parse_info = parse_resource(self, data)
-            if parse_info is not None and isinstance(parse_info, dict):
-                info.update(parse_info)
+        info['Resource'] = self.url
+        self.add_info(info)
+        data = None
 
-            if self.t is not None:
-                self.last_seen = datetime.now()
-                if self.post is not None:
-                    self.t = self.post(self.t)
+        if os.path.isdir(self.url):
+            data = self.url
+            info['Directory'] = self.url
+        elif '://' in self.url:
+            s = None
+            if 'file://' in self.url:
+                s = requests.session()
+                s.mount('file://', FileAdapter())
+            else:
+                s = CachedSession(cache_name="pyff_cache",
+                                  expire_after=config.request_cache_time,
+                                  old_data_on_error=True)
 
-                if self.is_expired():
-                    raise ResourceException("Resource at {} has expired".format(r.url))
+            r = s.get(self.url, verify=False, timeout=config.request_timeout)
+            if config.request_override_encoding is not None:
+                r.encoding = config.request_override_encoding
 
-                for (eid, error) in info['Validation Errors'].items():
-                    log.error(error)
+            info['HTTP Response Headers'] = r.headers
+            log.debug("got status_code={:d}, encoding={} from_cache={} from {}".
+                      format(r.status_code, r.encoding, getattr(r, "from_cache", False), self.url))
+            info['Status Code'] = str(r.status_code)
+            info['Reason'] = r.reason
 
-            if recurse:
-                for c in self.children:
-                    c.fetch()
-
-            self.add_info(info)
+            if r.ok:
+                data = r.text
+            else:
+                raise ResourceException("Got status={:d} while fetching {}".format(r.status_code, self.url))
         else:
-            raise ResourceException("Got status={:d} while fetching {}".format(r.status_code, r.url))
+            raise ResourceException("Unknown resource type {}".format(self.url))
+
+        parse_info = parse_resource(self, data)
+        if parse_info is not None and isinstance(parse_info, dict):
+            info.update(parse_info)
+
+        if self.t is not None:
+            self.last_seen = datetime.now()
+            if self.post is not None:
+                self.t = self.post(self.t)
+
+            if self.is_expired():
+                info['Expired'] = True
+                raise ResourceException("Resource at {} expired on {}".format(self.url,self.expire_time))
+            else:
+                info['Expired'] = False
+
+            for (eid, error) in info['Validation Errors'].items():
+                log.error(error)
+
+            if store is not None:
+                store.update(self.t, tid=self.name)
+
+        return self.children

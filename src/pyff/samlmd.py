@@ -2,7 +2,7 @@ from __future__ import absolute_import, unicode_literals
 from datetime import datetime
 from .utils import parse_xml, check_signature, root, validate_document, xml_error, \
     schema, iso2datetime, duration2timedelta, filter_lang, url2host, trunc_str, subdomains, \
-    has_tag, hash_id, load_callable, rreplace, dumptree
+    has_tag, hash_id, load_callable, rreplace, dumptree, first_text
 from .logs import log
 from .constants import config, NS, ATTRS, NF_URI, PLACEHOLDER_ICON
 from lxml import etree
@@ -12,6 +12,7 @@ from itertools import chain
 from copy import deepcopy
 from .exceptions import *
 from six import StringIO
+from .parse import add_parser
 
 
 class EntitySet(object):
@@ -44,7 +45,7 @@ def find_merge_strategy(strategy_name):
     if '.' not in strategy_name:
         strategy_name = "pyff.merge_strategies:%s" % strategy_name
     if ':' not in strategy_name:
-        strategy_name = rreplace(strategy_name, '.', ':') # backwards compat for old way of specifying these
+        strategy_name = rreplace(strategy_name, '.', ':')  # backwards compat for old way of specifying these
     return load_callable(strategy_name)
 
 
@@ -53,6 +54,7 @@ def parse_saml_metadata(source,
                         base_url=None,
                         fail_on_error=False,
                         filter_invalid=True,
+                        cleanup=None,
                         validate=True,
                         validation_errors=None):
     """Parse a piece of XML and return an EntitiesDescriptor element after validation.
@@ -64,6 +66,7 @@ def parse_saml_metadata(source,
 :param filter_invalid: (default True) remove invalid EntityDescriptor elements rather than raise an errror
 :param validate: (default: True) set to False to turn off all XML schema validation
 :param validation_errors: A dict that will be used to return validation errors to the caller
+:param cleanup: A callable that can be used to pre-process parsed metadata before validation. Use as a clue-bat.
 (but after xinclude processing and signature validation)
     """
 
@@ -78,12 +81,17 @@ def parse_saml_metadata(source,
 
         t = check_signature(t, key)
 
-        # get rid of ID as early as possible - probably not unique
-        for e in iter_entities(t):
-            if e.get('ID') is not None:
-                del e.attrib['ID']
+        if cleanup is not None:
+            t = cleanup(t)
+        else:  # at least get rid of ID attribute
+            for e in iter_entities(t):
+                if e.get('ID') is not None:
+                    del e.attrib['ID']
 
         t = root(t)
+
+        if fail_on_error:
+            filter_invalid = False
 
         if validate:
             if filter_invalid:
@@ -103,7 +111,6 @@ def parse_saml_metadata(source,
     except Exception as ex:
         if fail_on_error:
             raise ex
-        #traceback.print_exc(ex)
         log.error(ex)
         return None, None
 
@@ -113,7 +120,6 @@ def parse_saml_metadata(source,
 
 
 class SAMLMetadataResourceParser():
-
     def __init__(self):
         pass
 
@@ -126,6 +132,7 @@ class SAMLMetadataResourceParser():
         t, expire_time_offset = parse_saml_metadata(StringIO(content.encode('utf8')),
                                                     key=resource.opts['verify'],
                                                     base_url=resource.url,
+                                                    cleanup=resource.opts['cleanup'],
                                                     fail_on_error=resource.opts['fail_on_error'],
                                                     filter_invalid=resource.opts['filter_invalid'],
                                                     validate=resource.opts['validate'],
@@ -144,6 +151,7 @@ class SAMLMetadataResourceParser():
 
 
 from .parse import add_parser
+
 add_parser(SAMLMetadataResourceParser())
 
 
@@ -188,7 +196,7 @@ def entitiesdescriptor(entities,
                        valid_until=None,
                        validate=True,
                        copy=True,
-                       nsmap=dict()):
+                       nsmap=None):
     """
 :param lookup_fn: a function used to lookup entities by name
 :param entities: a set of entities specifiers (lookup is used to find entities from this set)
@@ -200,6 +208,9 @@ def entitiesdescriptor(entities,
 
 Produce an EntityDescriptors set from a list of entities. Optional Name, cacheDuration and validUntil are affixed.
     """
+
+    if nsmap is None:
+        nsmap = dict()
 
     def _resolve(member, l_fn):
         if hasattr(member, 'tag'):
@@ -234,6 +245,10 @@ Produce an EntityDescriptors set from a list of entities. Optional Name, cacheDu
             if copy:
                 ent_insert = deepcopy(ent_insert)
             t.append(ent_insert)
+
+    if config.devel_write_xml_to_file:
+        with open("/tmp/pyff_entities_out.xml", "w") as fd:
+            fd.write(dumptree(t))
 
     if validate:
         try:
@@ -559,8 +574,10 @@ def discojson(e, langs=None):
 
     return d
 
+
 def sha1_id(e):
     return hash_id(e, 'sha1')
+
 
 def entity_simple_summary(e):
     if e is None:
@@ -587,13 +604,6 @@ def entity_simple_summary(e):
 
     return d
 
-
-def first_text(elt, tag, default=None):
-    for matching in elt.iter(tag):
-        return matching.text
-    return default
-
-
 def entity_orgurl(entity, langs=None):
     for organizationUrl in filter_lang(entity.iter("{%s}OrganizationURL" % NS['md']), langs=langs):
         return organizationUrl.text
@@ -611,7 +621,8 @@ def entity_service_description(entity, langs=None):
 
 
 def entity_requested_attributes(entity, langs=None):
-    return [(a.get('Name'),bool(a.get('isRequired'))) for a in filter_lang(entity.iter("{%s}RequestedAttribute" % NS['md']), langs=langs)]
+    return [(a.get('Name'), bool(a.get('isRequired'))) for a in
+            filter_lang(entity.iter("{%s}RequestedAttribute" % NS['md']), langs=langs)]
 
 
 def entity_idp(entity):
@@ -632,18 +643,20 @@ def entity_contacts(entity):
     def _contact_dict(contact):
         first_name = first_text(contact, "{%s}GivenName" % NS['md'])
         last_name = first_text(contact, "{%s}SurName" % NS['md'])
-        org = first_text(entity,"{%s}OrganizationName" % NS['md']) or first_text(entity,"{%s}OrganizationDisplayName" % NS['md'])
-        company = first_text(entity,"{%s}Company" % NS['md'])
+        org = first_text(entity, "{%s}OrganizationName" % NS['md']) or first_text(entity,
+                                                                                  "{%s}OrganizationDisplayName" % NS[
+                                                                                      'md'])
+        company = first_text(entity, "{%s}Company" % NS['md'])
         mail = first_text(contact, "{%s}EmailAddress" % NS['md'])
         display_name = "Unknown"
         if first_name and last_name:
-            display_name = ' '.join([first_name,last_name])
+            display_name = ' '.join([first_name, last_name])
         elif first_name:
             display_name = first_name
         elif last_name:
             display_name = last_name
         elif mail:
-            _,_,display_name = mail.partition(':')
+            _, _, display_name = mail.partition(':')
 
         return dict(type=contact.get('contactType'),
                     first_name=first_name,
@@ -680,11 +693,13 @@ def entity_info(e, langs=None):
     d['is_idp'] = is_idp(e)
     d['is_sp'] = is_sp(e)
     d['is_aa'] = is_aa(e)
-    d['xml'] = dumptree(e, xml_declaration=False, pretty_print=True).decode('utf8').replace('<','&lt;').replace('>','&gt;')
+    d['xml'] = dumptree(e, xml_declaration=False, pretty_print=True).decode('utf8').replace('<', '&lt;').replace('>',
+                                                                                                                 '&gt;')
     if d['is_idp']:
-        d['protocols'] = entity_idp(e).get('protocolSupportEnumeration',"").split()
+        d['protocols'] = entity_idp(e).get('protocolSupportEnumeration', "").split()
 
     return d
+
 
 def entity_extensions(e):
     """Return a list of the Extensions elements in the EntityDescriptor
@@ -758,7 +773,7 @@ def set_entity_attributes(e, d, nf=NF_URI):
     if e.tag != "{%s}EntityDescriptor" % NS['md']:
         raise MetadataException("I can only add EntityAttribute(s) to EntityDescriptor elements")
 
-    for attr, value in d.iteritems():
+    for attr, value in d.items():
         a = _eattribute(e, attr, nf)
         velt = etree.Element("{%s}AttributeValue" % NS['saml'])
         velt.text = value
@@ -802,7 +817,7 @@ def set_reginfo(e, policy=None, authority=None):
     ri = etree.Element("{%s}RegistrationInfo" % NS['mdrpi'])
     ext.append(ri)
     ri.set('registrationAuthority', authority)
-    for lang, policy_url in policy.iteritems():
+    for lang, policy_url in policy.items():
         rp = etree.Element("{%s}RegistrationPolicy" % NS['mdrpi'])
         rp.text = policy_url
         rp.set('{%s}lang' % NS['xml'], lang)

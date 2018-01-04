@@ -16,7 +16,6 @@ from .utils import root, MetadataException, avg_domain_distance, load_callable
 from .constants import NS, config
 from .fetch import ResourceManager
 
-
 etree.set_default_parser(etree.XMLParser(resolve_entities=False))
 
 
@@ -36,14 +35,6 @@ class MDRepository():
         self.rm = ResourceManager()
         self.store_class = load_callable(config.store_class)
         self.store = None
-
-    def reload(self):
-        self.rm.reload()
-        store = self.store_class()
-        for r in self.rm.walk():
-            if r.t is not None:
-                store.update(r.t, tid=r.name)
-        self.store = store
 
     def search(self, query=None, path=None, page=None, page_limit=10, entity_filter=None, related=None):
         """
@@ -171,7 +162,10 @@ The dict in the list contains three items:
                 return lst
         raise MetadataException("unknown format for filtr member: %s" % member)
 
-    def _lookup(self, member):
+    def _lookup(self, member, store=None):
+        if store is None:
+            store = self.store
+
         if member is None:
             member = "entities"
 
@@ -180,12 +174,12 @@ The dict in the list contains three items:
                 (src, xp) = member.split("!")
                 if len(src) == 0:
                     src = None
-                return self.lookup(src, xp)
+                return self.lookup(src, xp=xp, store=store)
 
         log.debug("calling store lookup %s" % member)
-        return self.store.lookup(member)
+        return store.lookup(member)
 
-    def lookup(self, member, xp=None):
+    def lookup(self, member, xp=None, store=None):
         """
 Lookup elements in the working metadata repository
 
@@ -193,8 +187,10 @@ Lookup elements in the working metadata repository
 :type member: basestring
 :param xp: An optional xpath filter
 :type xp: basestring
+:param store: the store to operate on
 :return: An interable of EntityDescriptor elements
 :rtype: etree.Element
+
 
 **Selector Syntax**
 
@@ -213,8 +209,10 @@ the metadata repository then it is fetched an treated as a list of (one per line
 fails an empty list is returned.
 
         """
+        if store is None:
+            store = self.store
 
-        l = self._lookup(member)
+        l = self._lookup(member, store=store)
         if hasattr(l, 'tag'):
             l = [l]
         elif hasattr(l, '__iter__'):
@@ -255,7 +253,6 @@ Produce an EntityDescriptors set from a list of entities. Optional Name, cacheDu
                                   valid_until=valid_until,
                                   validate=validate,
                                   copy=copy)
-
 
     def summary(self, uri):
         """

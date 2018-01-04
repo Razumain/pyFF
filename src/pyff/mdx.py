@@ -49,7 +49,6 @@ import importlib
 
 import pkg_resources
 
-
 from six import StringIO
 import getopt
 import urlparse
@@ -106,6 +105,7 @@ class MDUpdate(Monitor):
                 state = {'update': True}
                 p.process(self.server.md, state)
 
+            self.server.ready = True
         except Exception as ex:
             log.error(ex.message)
         finally:
@@ -151,13 +151,13 @@ class EncodingDispatcher(object):
         vpath = path_info
         for prefix in self.prefixes:
             if vpath.startswith(prefix):
-                #log.debug("EncodingDispatcher (%s) called with %s" % (",".join(self.prefixes), path_info))
+                # log.debug("EncodingDispatcher (%s) called with %s" % (",".join(self.prefixes), path_info))
                 vpath = path_info.replace("%2F", "/")
                 plen = len(prefix)
                 vpath = vpath[plen + 1:]
                 npath = "%s/%s" % (prefix, self.enc(vpath))
-                #log.debug("EncodingDispatcher %s" % npath)
-                return self.next_dispatcher(npath.encode('ascii',errors='ignore'))
+                # log.debug("EncodingDispatcher %s" % npath)
+                return self.next_dispatcher(npath.encode('ascii', errors='ignore'))
         return self.next_dispatcher(vpath)
 
 
@@ -305,12 +305,12 @@ class MDRoot(object):
     stats = MDStats()
     discovery = SHIBDiscovery()
 
-    try:  # pragma: nocover
-        import dowser
-
-        memory = dowser.Root()
-    except ImportError:
-        memory = NotImplementedFunction('Memory profiling needs dowser')
+    if config.devel_memory_profile:
+        try:  # pragma: nocover
+            import dowser
+            memory = dowser.Root()
+        except ImportError:
+            memory = NotImplementedFunction('Memory profiling needs dowser')
 
     _well_known = WellKnown()
     static = cherrypy.tools.staticdir.handler("/static", os.path.join(site_dir, "static"))
@@ -391,7 +391,7 @@ Disallow: /
                                cmdline=" ".join(sys.argv),
                                stats=stats,
                                repo=self.server.md,
-                               plumbings=["%s" % p for p in self.server.plumbings])
+                               plumbings=self.server.plumbings)
 
     @cherrypy.expose
     def reset(self):
@@ -440,7 +440,7 @@ Search the active set for matching entities.
         """The default request processor unpacks base64-encoded reuqests and passes them onto the MDServer.request
         handler.
         """
-        #log.debug("ROOT default args: %s, kwargs: %s" % (repr(args), repr(kwargs)))
+        # log.debug("ROOT default args: %s, kwargs: %s" % (repr(args), repr(kwargs)))
         if len(args) > 0 and args[0] in self.server.aliases:
             kwargs['pfx'] = args[0]
             if len(args) > 1:
@@ -471,14 +471,11 @@ class MDServer(object):
         self.aliases = config.aliases
         self.psl = PublicSuffixList()
         self.md = MDRepository()
+        self.ready = False
 
         if config.autoreload:
             for f in pipes:
                 cherrypy.engine.autoreload.files.add(f)
-
-    @property
-    def ready(self):
-        return self.md.store is not None
 
     def reload_pipeline(self):
         new_plumbings = [plumbing(v) for v in self._pipes]
@@ -513,12 +510,12 @@ class MDServer(object):
         path = kwargs.get('path', None)
         content_type = kwargs.get('content_type', None)
 
-        #log.debug("MDServer pfx=%s, path=%s, content_type=%s" % (pfx, path, content_type))
+        # log.debug("MDServer pfx=%s, path=%s, content_type=%s" % (pfx, path, content_type))
 
         def _d(x, do_split=True):
             if x is not None:
                 x = x.strip()
-            #log.debug("_d(%s,%s)" % (x, do_split))
+            # log.debug("_d(%s,%s)" % (x, do_split))
             if x is None or len(x) == 0:
                 return None, None
 
@@ -818,6 +815,7 @@ def main():
             'tools.caching.delay': 3600,  # this is how long we keep static stuff
             'tools.cpstats.on': True,
             'checker.on': False,
+            'log.screen': False,
             'tools.proxy.on': config.proxy,
             'allow_shutdown': config.allow_shutdown,
             'error_page.404': lambda **kwargs: error_page(404, _=_, **kwargs),
