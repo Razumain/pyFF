@@ -22,9 +22,12 @@ __author__ = 'leifj'
 
 
 class PipeLineTest(SignerTestCase):
-    def run_pipeline(self, pl_name, ctx=None, md=MDRepository()):
+    def run_pipeline(self, pl_name, ctx=None, md=None):
         if ctx is None:
             ctx = dict()
+
+        if md is None:
+            md = MDRepository()
 
         templates = TemplateLookup(directories=[os.path.join(self.datadir, 'simple-pipeline')])
         pipeline = tempfile.NamedTemporaryFile('w').name
@@ -309,6 +312,7 @@ class LoadErrorTest(PipeLineTest):
 
 # noinspection PyUnresolvedReferences
 class SigningTest(PipeLineTest):
+
     def test_signing(self):
         self.output = tempfile.NamedTemporaryFile('w').name
         res, md, ctx = self.run_pipeline("signer.fd", self)
@@ -573,3 +577,19 @@ class SigningTest(PipeLineTest):
                 raise Skip
             print(md.lookup('https://idp.example.com/saml2/idp/metadata.php'))
             assert (not md.lookup('https://idp.example.com/saml2/idp/metadata.php'))
+
+    def test_bad_namespace(self):
+        with patch.multiple("sys", exit=self.sys_exit, stdout=StreamCapturing(sys.stdout)):
+            tmpfile = tempfile.NamedTemporaryFile('w').name
+            try:
+                res, md = self.exec_pipeline("""
+- when batch:
+    - load:
+        - %s/bad_metadata cleanup bad
+    - loadstats
+- when bad:
+    - check_xml_namespaces
+""" % self.datadir)
+            except ValueError:
+                raise Skip
+            assert("Expected exception from bad namespace in")
