@@ -25,7 +25,7 @@ from .logs import log
 from .pipes import Plumbing, PipeException, PipelineCallback, pipe
 from .stats import set_metadata_info
 from .utils import total_seconds, dumptree, safe_write, root, with_tree, duration2timedelta, xslt_transform, validate_document
-from .samlmd import iter_entities, annotate_entity, set_entity_attributes, discojson
+from .samlmd import sort_entities, iter_entities, annotate_entity, set_entity_attributes, discojson, set_pubinfo, set_reginfo
 from .fetch import Resource
 from six import StringIO
 from six.moves.urllib_parse import urlparse
@@ -287,6 +287,37 @@ Dumps the working document on stdout. Useful for testing.
 
     for e in req.t.xpath("//md:EntityDescriptor", namespaces=NS, smart_strings=False):
         print(e.get('entityID'))
+    return req.t
+
+
+@pipe
+def sort(req, *opts):
+    """
+Sorts the working entities by the value returned by the given xpath.
+By default, entities are sorted by 'entityID' when the 'order_by [xpath]' option is omitted and
+otherwise as second criteria.
+Entities where no value exists for a given xpath are sorted last.
+
+:param req: The request
+:param opts: Options: <order_by [xpath]> (see bellow)
+:return: None
+
+Options are put directly after "sort". E.g:
+
+.. code-block:: yaml
+
+    - sort order_by [xpath]
+
+**Options**
+- order_by [xpath] : xpath expression selecting to the value used for sorting the entities.
+    """
+    if req.t is None:
+        raise PipeException("Unable to sort empty document.")
+
+    opts = dict(zip(opts[0:1], [" ".join(opts[1:])]))
+    opts.setdefault('order_by', None)
+    sort_entities(req.t, opts['order_by'])
+
     return req.t
 
 
@@ -1261,7 +1292,7 @@ elements of the active document.
         raise PipeException("Your pipeline is missing a select statement.")
 
     for e in iter_entities(req.t):
-        req.md.set_reginfo(e, **req.args)
+        set_reginfo(e, **req.args)
 
     return req.t
 
@@ -1288,7 +1319,7 @@ elements of the active document.
     if req.t is None:
         raise PipeException("Your pipeline is missing a select statement.")
 
-    req.md.set_pubinfo(root(req.t), **req.args)
+    set_pubinfo(root(req.t), **req.args)
 
     return req.t
 

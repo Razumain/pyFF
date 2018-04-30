@@ -9,14 +9,14 @@ from os.path import abspath, dirname, join
 from setuptools import find_packages
 
 __author__ = 'Leif Johansson'
-__version__ = '0.10.0dev'
+__version__ = '0.10.0.dev0'
 
 here = abspath(dirname(__file__))
 README = open(join(here, 'README.rst')).read()
 NEWS = open(join(here, 'NEWS.txt')).read()
 
 install_requires = [
-    'lxml >=3.0',
+    'lxml==4.1.1',
     'pyyaml >=3.10',
     'pyXMLSecurity >=0.15',
     'cherrypy >=3.2.0',
@@ -33,7 +33,8 @@ install_requires = [
     'requests_file',
     'pyconfig',
     'pyyaml',
-    'multiprocess'
+    'multiprocess',
+    'minify'
 ]
 
 python_implementation_str = python_implementation()
